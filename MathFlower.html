@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Parametric Flower — Three.js</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: #05060a;
+            color: #ddd;
+            font-family: system-ui, Segoe UI, Roboto, Helvetica, Arial;
+        }
+
+        #ui {
+            position: absolute;
+            left: 12px;
+            top: 12px;
+            z-index: 2;
+            background: rgba(0, 0, 0, 0.35);
+            padding: 10px;
+            border-radius: 8px;
+            backdrop-filter: blur(6px);
+        }
+
+        label {
+            font-size: 13px;
+            display: block;
+            margin: 6px 0 2px;
+        }
+
+        input[type=range] {
+            width: 220px;
+        }
+
+        #info {
+            position: absolute;
+            left: 12px;
+            bottom: 12px;
+            color: #aaa;
+            font-size: 12px;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #loveText {
+            position: absolute;
+            top: 60px;
+            right: 60px;
+            max-width: 600px;
+
+            text-align: right;
+
+            font-size: 20px;
+            line-height: 1.5;
+            color: rgba(255, 220, 235, 0.95);
+
+            font-family: "Georgia", "Times New Roman", serif;
+            letter-spacing: 0.3px;
+
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: opacity 1.8s ease, transform 1.8s ease;
+
+            pointer-events: none;
+        }
+
+        #loveText span {
+            display: block;
+            margin-top: 6px;
+            font-size: 16px;
+            color: rgba(255, 180, 210, 0.9);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="ui">
+        <label>Scale (a): <span id="aVal">60</span></label>
+        <input id="a" type="range" min="8" max="200" step="1" value="60" />
+        <label>Resolution U (rows): <span id="uVal">50</span></label>
+        <input id="resU" type="range" min="20" max="300" step="1" value="50" />
+        <label>Resolution V (cols): <span id="vVal">800</span></label>
+        <input id="resV" type="range" min="400" max="1600" step="1" value="800" />
+        <label>Point size: <span id="psVal">1.1</span></label>
+        <input id="pSize" type="range" min="0.2" max="6" step="0.1" value="1.1" />
+        <label><input id="pulse" type="checkbox" checked /> Pulse (slow)</label>
+    </div>
+    <div id="info">Drag to orbit • scroll to zoom • adjustable params</div>
+    <div id="loveText">
+        For you, my precious flower.<br />
+        <span>A small bloom of mathematics, grown with love just for you.</span>
+    </div>
+
+    <script type="importmap">
+    {
+    "imports": {
+        "three": "https://unpkg.com/three@0.155.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.155.0/examples/jsm/"
+    }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from "three";
+        import { OrbitControls } from 'https://unpkg.com/three@0.155.0/examples/jsm/controls/OrbitControls.js';
+
+        // ---- Scene setup
+        const scene = new THREE.Scene();
+        const flowerGroup = new THREE.Group();
+        flowerGroup.rotation.x = -Math.PI / 2;
+        flowerGroup.rotation.z = Math.PI / 6;
+        scene.add(flowerGroup);
+        scene.fog = new THREE.FogExp2(0x05060a, 0.0009);
+
+        const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 2000);
+        camera.position.set(0, 120, 260);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+
+        // subtle ambient light so point colors pop a bit
+        const ambient = new THREE.AmbientLight(0xffffff, 0.35);
+        scene.add(ambient);
+
+        // Parameters & UI
+        const ui = {
+            a: 60,
+            resU: 50,
+            resV: 800,
+            pSize: 1.1,
+            pulse: true
+        };
+
+        const aSlider = document.getElementById('a');
+        const resUSlider = document.getElementById('resU');
+        const resVSlider = document.getElementById('resV');
+        const pSizeSlider = document.getElementById('pSize');
+        const pulseCheckbox = document.getElementById('pulse');
+        const loveText = document.getElementById("loveText");
+
+        const aVal = document.getElementById('aVal');
+        const uVal = document.getElementById('uVal');
+        const vVal = document.getElementById('vVal');
+        const psVal = document.getElementById('psVal');
+
+        aSlider.oninput = () => { ui.a = Number(aSlider.value); aVal.textContent = ui.a; updateMaterial(); };
+        resUSlider.oninput = () => { ui.resU = Number(resUSlider.value); uVal.textContent = ui.resU; };
+        resVSlider.oninput = () => { ui.resV = Number(resVSlider.value); vVal.textContent = ui.resV; };
+        pSizeSlider.oninput = () => { ui.pSize = Number(pSizeSlider.value); psVal.textContent = ui.pSize; updateMaterial(); };
+        pulseCheckbox.onchange = () => { ui.pulse = pulseCheckbox.checked; };
+
+        aVal.textContent = ui.a; uVal.textContent = ui.resU; vVal.textContent = ui.resV; psVal.textContent = ui.pSize;
+
+        // Point system containers
+        let pointsMesh = null;
+        let geo, mat;
+        let drawProgress = 0;        // 0 → 1
+        let introDone = false;
+
+        function safeMod(x, m) {
+            const res = x % m;
+            return (res < 0) ? res + m : res;
+        }
+
+        // Convert HSL to RGB (returns array)
+        function hslToRgb(h, s, l) {
+            // h in [0,1], s,l in [0,1]
+            if (s === 0) return [l, l, l];
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            const hk = (n) => {
+                let t = (h + n / 3);
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1 / 6) return p + (q - p) * 6 * t;
+                if (t < 1 / 2) return q;
+                if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                return p;
+            };
+            return [hk(0), hk(1), hk(2)];
+        }
+
+        function buildGeometry(resU = ui.resU, resV = ui.resV) {
+            const total = resU * resV;
+            geo = new THREE.BufferGeometry();
+            const positions = new Float32Array(total * 3);
+            const colors = new Float32Array(total * 3);
+            const sizes = new Float32Array(total);
+
+            let i = 0;
+            for (let iu = 0; iu < resU; iu++) {
+                const u = iu / Math.max(1, resU - 1); // u ∈ [0,1]
+                for (let iv = 0; iv < resV; iv++) {
+                    const vRaw = iv / (resV - 1); // vRaw ∈ [0,1]
+                    // DRAWING EFFECT
+                    if (vRaw > drawProgress) continue;
+                    const v = vRaw;
+                    // Equations from the image
+                    const t = v * 36 - 2 * Math.PI;
+                    const q = (Math.PI / 2) * Math.exp(-t / (8 * Math.PI));
+                    // mod(3.6 t, 2π) with safe positive mod
+                    const m = safeMod(3.6 * t, 2 * Math.PI);
+                    const term = 1 - (m / Math.PI);
+                    const pow4 = Math.pow(term, 4);
+                    const u_val = 1 - 0.5 * pow4;
+
+                    const x = u;
+                    const y = 2 * Math.pow((x * x - x), 2) * Math.sin(q);
+                    const r = u_val * (x * Math.sin(q) + y * Math.cos(q));
+
+                    const a = ui.a;
+                    const X = a * r * Math.cos(t);
+                    const Y = a * r * Math.sin(t);
+                    const Z = a * u_val * (x * Math.cos(q) - y * Math.sin(q));
+
+                    positions[i * 3 + 0] = X;
+                    positions[i * 3 + 1] = Y;
+                    positions[i * 3 + 2] = Z;
+
+                    // color mapping: use u_val & v to set hue/brightness
+                    const hue = (0.6 - 0.45 * u_val) + 0.15 * v; // around blue->pinkish region
+                    const light = 0.45 + 0.4 * u_val;
+                    const sat = 0.7;
+                    const rgb = hslToRgb((hue + 1) % 1, sat, Math.min(1, light));
+                    colors[i * 3 + 0] = rgb[0];
+                    colors[i * 3 + 1] = rgb[1];
+                    colors[i * 3 + 2] = rgb[2];
+
+                    sizes[i] = 1.0 + 1.5 * u_val; // base size per point (used if shader expands)
+                    i++;
+                }
+            }
+
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            return geo;
+        }
+
+        function makeMaterial() {
+            // PointsMaterial supports vertex colors; use sizeAttenuation for perspective sizing.
+            const material = new THREE.PointsMaterial({
+                vertexColors: true,
+                size: ui.pSize,
+                sizeAttenuation: true,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.95,
+                map: generateCircleTexture(),
+                alphaTest: 0.01,
+                blending: THREE.AdditiveBlending
+            });
+            return material;
+        }
+
+        // small circular texture for nicer round points
+        function generateCircleTexture() {
+            const size = 64;
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            const grd = ctx.createRadialGradient(size / 2, size / 2, 1, size / 2, size / 2, size / 2);
+            grd.addColorStop(0, 'rgba(255,255,255,1)');
+            grd.addColorStop(0.2, 'rgba(255,255,255,0.9)');
+            grd.addColorStop(0.55, 'rgba(255,255,255,0.35)');
+            grd.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grd;
+            ctx.fillRect(0, 0, size, size);
+            const tex = new THREE.Texture(canvas);
+            tex.needsUpdate = true;
+            return tex;
+        }
+
+        function rebuildGeometry() {
+            flowerGroup.clear();
+
+            // Dispose old mesh if it exists
+            if (pointsMesh) {
+                pointsMesh.geometry.dispose();
+                pointsMesh.material.dispose();
+                pointsMesh = null;
+            }
+
+            // Create new geometry + material
+            const geometry = buildGeometry();
+            const material = makeMaterial();
+
+            pointsMesh = new THREE.Points(geometry, material);
+            flowerGroup.add(pointsMesh);
+        }
+
+
+        function updateMaterial() {
+            if (mat) {
+                mat.size = ui.pSize;
+                // to make scale changes visible immediately, rebuild positions or update scale
+            }
+            // if user changed 'a' quickly we'd prefer full rebuild for accurate positions
+            // but to keep it responsive we will rebuild geometry after a small debounce if needed.
+        }
+
+        // initial build
+        rebuildGeometry();
+
+        // responsiveness
+        window.addEventListener('resize', () => {
+            camera.aspect = innerWidth / innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(innerWidth, innerHeight);
+        });
+
+        // A tiny pulsing/breathing effect: modulate world scale slightly
+        let clock = new THREE.Clock();
+
+        function animate() {
+            if (!introDone) {
+                drawProgress += 0.005; // speed (try 0.002–0.006)
+
+                if (drawProgress >= 1) {
+                    drawProgress = 1;
+                    introDone = true;
+                    loveText.style.opacity = 1;
+                    loveText.style.transform = "translateY(0)";
+                }
+
+                rebuildGeometry(); // re-sample with new v-range
+            }
+            requestAnimationFrame(animate);
+            const t = clock.getElapsedTime();
+
+            controls.update();
+
+            if (pointsMesh) {
+                // slow rotation to admire the flower
+                pointsMesh.rotation.z = Math.sin(t * 0.07) * 0.04;
+                pointsMesh.rotation.x = Math.sin(t * 0.03) * 0.025;
+
+                // pulse: gently scale object (not changing math, just global scale)
+                if (ui.pulse) {
+                    const pulse = 1.0 + 0.07 * Math.sin(t * 1.2); // slow gentle beat
+                    pointsMesh.scale.set(pulse, pulse, pulse);
+                } else {
+                    pointsMesh.scale.set(1, 1, 1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // initial hint: if user changes resolution, rebuild
+        let rebuildTimeout = null;
+        [resUSlider, resVSlider].forEach(el => el.addEventListener('input', () => {
+            if (rebuildTimeout) clearTimeout(rebuildTimeout);
+            rebuildTimeout = setTimeout(() => { ui.resU = Number(resUSlider.value); ui.resV = Number(resVSlider.value); rebuildGeometry(); }, 350);
+        }));
+
+        // rebuild when scale 'a' drastically changed (do it on mouseup)
+        aSlider.addEventListener('change', () => { rebuildGeometry(); });
+
+        // update point size immediately
+        pSizeSlider.addEventListener('input', () => {
+            ui.pSize = Number(pSizeSlider.value);
+            if (mat) mat.size = ui.pSize;
+            psVal.textContent = ui.pSize;
+        });
+        // Rebuild on initial load to reflect UI values
+        // (already done above)
+    </script>
+</body>
+
+</html>
