@@ -89,6 +89,8 @@
         <input id="resV" type="range" min="400" max="1600" step="1" value="800" />
         <label>Point size: <span id="psVal">1.1</span></label>
         <input id="pSize" type="range" min="0.2" max="6" step="0.1" value="1.1" />
+        <label>Butterflies: <span id="bfVal">100</span></label>
+        <input id="bfCount" type="range" min="0" max="200" step="1" value="100" />
         <label><input id="pulse" type="checkbox" checked /> Pulse (slow)</label>
     </div>
     <div id="info">Drag to orbit • scroll to zoom • adjustable params</div>
@@ -116,6 +118,23 @@
         flowerGroup.rotation.z = Math.PI / 6;
         scene.add(flowerGroup);
         scene.fog = new THREE.FogExp2(0x05060a, 0.0009);
+
+        const butterflyGroup = new THREE.Group();
+        scene.add(butterflyGroup);
+
+        const BUTTERFLY_COUNT = 100;
+        const butterflyGeo = createButterflyGeometry();
+
+        const butterflies = [];
+        const DEPTH_FADE = {
+            near: 40,    // too close to camera
+            far: 260     // too far away
+        };
+        const FLOWER_CENTER = new THREE.Vector3(0, 10, 0);
+
+        for (let i = 0; i < BUTTERFLY_COUNT; i++) {
+            createButterfly(true);
+        }
 
         const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 2000);
         camera.position.set(0, 120, 260);
@@ -153,6 +172,18 @@
         const uVal = document.getElementById('uVal');
         const vVal = document.getElementById('vVal');
         const psVal = document.getElementById('psVal');
+
+        const bfSlider = document.getElementById("bfCount");
+        const bfVal = document.getElementById("bfVal");
+
+        let targetButterflyCount = BUTTERFLY_COUNT;
+
+        bfVal.textContent = targetButterflyCount;
+
+        bfSlider.oninput = () => {
+            targetButterflyCount = Number(bfSlider.value);
+            bfVal.textContent = targetButterflyCount;
+        };
 
         aSlider.oninput = () => { ui.a = Number(aSlider.value); aVal.textContent = ui.a; updateMaterial(); };
         resUSlider.oninput = () => { ui.resU = Number(resUSlider.value); uVal.textContent = ui.resU; };
@@ -207,10 +238,15 @@
                     if (vRaw > drawProgress) continue;
                     const v = vRaw;
                     // Equations from the image
-                    const t = v * 36 - 2 * Math.PI;
+                    // u goes from 0 (bottom) → 1 (top)
+                    const petalCount = THREE.MathUtils.lerp(12, 1, u);
+
+                    // angular parameter
+                    const t = v * 2 * Math.PI * petalCount;
+
                     const q = (Math.PI / 2) * Math.exp(-t / (8 * Math.PI));
                     // mod(3.6 t, 2π) with safe positive mod
-                    const m = safeMod(3.6 * t, 2 * Math.PI);
+                    const m = safeMod(4.5 * t, 2 * Math.PI);
                     const term = 1 - (m / Math.PI);
                     const pow4 = Math.pow(term, 4);
                     const u_val = 1 - 0.5 * pow4;
@@ -283,31 +319,147 @@
         }
 
         function rebuildGeometry() {
-            flowerGroup.clear();
-
-            // Dispose old mesh if it exists
+            // Remove only the previous flower Points mesh (keep stem/leaves in flowerGroup)
             if (pointsMesh) {
-                pointsMesh.geometry.dispose();
-                pointsMesh.material.dispose();
+                flowerGroup.remove(pointsMesh);
+                try { pointsMesh.geometry.dispose(); } catch (e) { }
+                try { pointsMesh.material.dispose(); } catch (e) { }
                 pointsMesh = null;
             }
 
-            // Create new geometry + material
+            // Create new geometry + material and keep global refs so UI can update them
             const geometry = buildGeometry();
             const material = makeMaterial();
+            geo = geometry;
+            mat = material;
 
             pointsMesh = new THREE.Points(geometry, material);
             flowerGroup.add(pointsMesh);
         }
 
-
         function updateMaterial() {
             if (mat) {
                 mat.size = ui.pSize;
-                // to make scale changes visible immediately, rebuild positions or update scale
             }
             // if user changed 'a' quickly we'd prefer full rebuild for accurate positions
             // but to keep it responsive we will rebuild geometry after a small debounce if needed.
+        }
+
+        function butterflyPoint(t) {
+            const r =
+                Math.exp(Math.cos(t)) -
+                2 * Math.cos(4 * t) -
+                Math.pow(Math.sin(t / 12), 5);
+
+            return new THREE.Vector3(
+                Math.sin(t) * r,
+                Math.cos(t) * r,
+                Math.sin(t * 0.5) * 0.3 // subtle vertical flutter
+            );
+        }
+
+        function createButterflyGeometry(segments = 100) {
+            const left = [];
+            const right = [];
+
+            for (let i = 0; i < segments; i++) {
+                const t = (i / segments) * Math.PI * 2;
+                const p = butterflyPoint(t);
+
+                if (p.x < 0) {
+                    left.push(p.x, p.y, p.z);
+                } else {
+                    right.push(p.x, p.y, p.z);
+                }
+            }
+
+            function makeGeo(arr) {
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(new Float32Array(arr), 3)
+                );
+                return geo;
+            }
+
+            return {
+                left: makeGeo(left),
+                right: makeGeo(right)
+            };
+        }
+
+        function createButterfly(spawnAtCenter = false) {
+            const mat = new THREE.PointsMaterial({
+                color: new THREE.Color(1.0, 0.6, 0.8),
+                size: 0.6,
+                transparent: true,
+                opacity: 0.0, // start invisible
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            const leftWing = new THREE.Points(butterflyGeo.left, mat.clone());
+            const rightWing = new THREE.Points(butterflyGeo.right, mat.clone());
+
+            const b = new THREE.Group();
+            b.add(leftWing);
+            b.add(rightWing);
+
+            const orbitRadius = 50 + Math.random() * 120;
+            const orbitAngle = Math.random() * Math.PI * 2;
+
+            b.userData = {
+                leftWing,
+                rightWing,
+
+                orbitAngle,
+                orbitSpeed: 0.004 + Math.random() * 0.004,
+                orbitRadius,
+
+                heightOffset: Math.random() * 60,
+                noiseSeed: Math.random() * 1000,
+
+                flapPhase: Math.random() * Math.PI * 2,
+                flapSpeed: 4 + Math.random() * 3,
+
+                fadeIn: 0, // 👈 important
+                targetQuat: new THREE.Quaternion()
+            };
+
+            // 🌸 spawn logic
+            if (spawnAtCenter) {
+                b.position.copy(FLOWER_CENTER);
+            } else {
+                b.position.set(
+                    FLOWER_CENTER.x + Math.cos(orbitAngle) * orbitRadius,
+                    FLOWER_CENTER.y + Math.random() * 60,
+                    FLOWER_CENTER.z + Math.sin(orbitAngle) * orbitRadius
+                );
+                b.userData.fadeIn = 1;
+            }
+
+            butterflyGroup.add(b);
+            butterflies.push(b);
+        }
+
+        function applyDepthFade(b) {
+            const d = b.userData;
+            const dist = camera.position.distanceTo(b.position);
+
+            let alpha = 1;
+
+            if (dist < DEPTH_FADE.near) {
+                alpha = THREE.MathUtils.smoothstep(dist, DEPTH_FADE.near, DEPTH_FADE.near + 40);
+            } else if (dist > DEPTH_FADE.far) {
+                alpha = 1 - THREE.MathUtils.smoothstep(dist, DEPTH_FADE.far, DEPTH_FADE.far + 60);
+            }
+
+            // Respect the fade-in progress (new butterflies)
+            const fadeIn = (d.fadeIn !== undefined) ? THREE.MathUtils.clamp(d.fadeIn, 0, 1) : 1;
+            const finalAlpha = alpha * fadeIn;
+
+            d.leftWing.material.opacity = 0.7 * finalAlpha;
+            d.rightWing.material.opacity = 0.7 * finalAlpha;
         }
 
         // initial build
@@ -324,6 +476,72 @@
         let clock = new THREE.Clock();
 
         function animate() {
+            // ADD butterflies
+            while (butterflies.length < targetButterflyCount) {
+                createButterfly(true); // 🌸 fly out from flower
+            }
+
+            // REMOVE butterflies (soft remove)
+            while (butterflies.length > targetButterflyCount) {
+                const b = butterflies.pop();
+                butterflyGroup.remove(b);
+                b.traverse(o => {
+                    if (o.material) o.material.dispose();
+                    if (o.geometry) o.geometry.dispose();
+                });
+            }
+            butterflies.forEach((b, i) => {
+                const d = b.userData;
+
+                // -------- ORBIT MOTION --------
+                d.orbitAngle += d.orbitSpeed;
+
+                const orbitX = Math.cos(d.orbitAngle) * d.orbitRadius;
+                const orbitZ = Math.sin(d.orbitAngle) * d.orbitRadius;
+
+                const floatY =
+                    d.heightOffset +
+                    Math.sin(d.orbitAngle * 2 + i) * 10;
+
+                // subtle noise (breaks perfection)
+                const noiseX = Math.sin(d.noiseSeed + performance.now() * 0.0008) * 8;
+                const noiseZ = Math.cos(d.noiseSeed + performance.now() * 0.0006) * 8;
+
+                const targetPos = new THREE.Vector3(
+                    FLOWER_CENTER.x + orbitX + noiseX,
+                    FLOWER_CENTER.y + floatY,
+                    FLOWER_CENTER.z + orbitZ + noiseZ
+                );
+
+                // smooth movement
+                b.position.lerp(targetPos, 0.08);
+
+                // -------- FACE DIRECTION --------
+                const moveDir = targetPos.clone().sub(b.position);
+                // protect against zero-length
+                if (moveDir.lengthSq() > 1e-6) moveDir.normalize();
+                else moveDir.set(1, 0, 0);
+
+                d.targetQuat.setFromUnitVectors(new THREE.Vector3(1, 0, 0), moveDir);
+                b.quaternion.slerp(d.targetQuat, 0.15);
+
+                // -------- WING FLAP --------
+                d.flapPhase += 0.03 * d.flapSpeed;
+                const flap = Math.sin(d.flapPhase);
+                const vertical = THREE.MathUtils.clamp(moveDir.y, -1, 1);
+
+                d.leftWing.rotation.y = flap * 0.5;
+                d.rightWing.rotation.y = -flap * 0.5;
+                d.leftWing.rotation.x = -flap * vertical * 0.4;
+                d.rightWing.rotation.x = -flap * vertical * 0.4;
+
+                // -------- FADE-IN (new butterflies spawn at center) --------
+                d.fadeIn = Math.min(1, (d.fadeIn || 0) + 0.03);
+
+                // -------- DEPTH FADE (respects fadeIn inside applyDepthFade) --------
+                applyDepthFade(b);
+            });
+
             if (!introDone) {
                 drawProgress += 0.005; // speed (try 0.002–0.006)
 
@@ -354,7 +572,6 @@
                     pointsMesh.scale.set(1, 1, 1);
                 }
             }
-
             renderer.render(scene, camera);
         }
 
